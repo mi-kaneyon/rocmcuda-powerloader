@@ -71,6 +71,9 @@ chmod +x   create_directory_init.sh
 - Sound loopback
 - All in one test (burn-in mode)
 
+> [!TIP]
+> Under developing stability and usability now
+
 
   
 

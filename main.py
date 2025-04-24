@@ -23,13 +23,12 @@ except ImportError:
 
 # NetworkTest import
 try:
-    from network_test.nettest import NetworkTestApp, nettest_main
+    from network_test.nettest import NetworkTestApp, run_network_test_loop
 except ImportError:
-    nettest_main = None
+    run_network_test_loop = None
     NetworkTestApp = None
 
 # Global start event for synchronizing burn‑in tests.
-global start_event
 start_event = threading.Event()
 
 
@@ -99,21 +98,22 @@ def run_storage_test_wrapper(storage_instance, progress_callback, duration, stop
     storage_instance.run_storage_test(progress_callback, duration)
 
 
-def run_network_test_wrapper(stop_event, net_area, test_interval=5):
-    if nettest_main is None:
-        net_area.insert(tk.END, "[Network Test] Network test module not found. Skipping network test.\n")
+def run_network_test_wrapper(stop_event, net_area, _unused_interval=None):
+    """
+    設定画面で保存した JSON を毎ループ読み込み。
+    run_network_test_loop が設定の interval を尊重して ping を実行します。
+    """
+    if run_network_test_loop is None:
+        net_area.insert(tk.END, "[Network Test] Module not found. Skipping network test.\n")
         net_area.see(tk.END)
         return
-    # 固定のターゲットIP "8.8.8.8" を内部で使用する前提とする
-    while not stop_event.is_set():
-        try:
-            result = nettest_main()  # ネットワークテストの実処理
-            net_area.insert(tk.END, f"[Network Test] Result: {result}\n")
-            net_area.see(tk.END)
-        except Exception as e:
-            net_area.insert(tk.END, f"[Network Test] Exception: {e}\n")
-            net_area.see(tk.END)
-        time.sleep(test_interval)
+
+    def callback(target, result):
+        net_area.insert(tk.END, f"[Network → {target}] {result}\n")
+        net_area.see(tk.END)
+
+    # run_network_test_loop は内部で load_config() を呼び、interval 毎に callback します
+    run_network_test_loop(stop_event, callback)
 
 
 def create_burnin_popup(root):
@@ -157,7 +157,7 @@ class LoadTestApp:
         self.burnin_duration = tk.IntVar(value=50)
         self.stress_level = tk.StringVar(value="Low")
 
-        # Stop event and thread management
+        # Thread/process management
         self.stop_event = None
         self.burnin_stop_event = threading.Event()
         self.cpu_threads = []
@@ -178,9 +178,13 @@ class LoadTestApp:
         self.cpu_slider = ttk.Scale(controls_frame, from_=0, to=100, variable=self.cpu_load)
         self.cpu_slider.grid(column=1, row=0, padx=10, pady=5)
         ttk.Label(controls_frame, text="CPU Load Type").grid(column=0, row=1, padx=10, pady=5)
-        self.cpu_load_standard = ttk.Radiobutton(controls_frame, text="Standard", variable=self.cpu_load_type, value="Standard")
+        self.cpu_load_standard = ttk.Radiobutton(
+            controls_frame, text="Standard", variable=self.cpu_load_type, value="Standard"
+        )
         self.cpu_load_standard.grid(column=1, row=1, padx=10, pady=5)
-        self.cpu_load_x86 = ttk.Radiobutton(controls_frame, text="x86 Instructions", variable=self.cpu_load_type, value="x86")
+        self.cpu_load_x86 = ttk.Radiobutton(
+            controls_frame, text="x86 Instructions", variable=self.cpu_load_type, value="x86"
+        )
         self.cpu_load_x86.grid(column=2, row=1, padx=10, pady=5)
 
         # GPU Load Controls
@@ -191,9 +195,13 @@ class LoadTestApp:
         self.gpu_vram_slider = ttk.Scale(controls_frame, from_=0, to=100, variable=self.gpu_vram_load)
         self.gpu_vram_slider.grid(column=1, row=3, padx=10, pady=5)
         ttk.Label(controls_frame, text="GPU Load Type").grid(column=0, row=4, padx=10, pady=5)
-        self.gpu_load_3d = ttk.Radiobutton(controls_frame, text="3D Render", variable=self.gpu_load_type, value="3D Render")
+        self.gpu_load_3d = ttk.Radiobutton(
+            controls_frame, text="3D Render", variable=self.gpu_load_type, value="3D Render"
+        )
         self.gpu_load_3d.grid(column=1, row=4, padx=10, pady=5)
-        self.gpu_load_tensor = ttk.Radiobutton(controls_frame, text="Model Training", variable=self.gpu_load_type, value="Model Training")
+        self.gpu_load_tensor = ttk.Radiobutton(
+            controls_frame, text="Model Training", variable=self.gpu_load_type, value="Model Training"
+        )
         self.gpu_load_tensor.grid(column=2, row=4, padx=10, pady=5)
 
         # Test Buttons
@@ -201,25 +209,38 @@ class LoadTestApp:
         self.start_button.grid(column=0, row=5, padx=10, pady=10)
         self.stop_button = ttk.Button(controls_frame, text="Stop Load", command=self.stop_all_tests)
         self.stop_button.grid(column=1, row=5, padx=10, pady=10)
-        self.storage_test_button = ttk.Button(controls_frame, text="Storage Test", command=self.open_storage_window)
+        self.storage_test_button = ttk.Button(
+            controls_frame, text="Storage Test", command=self.open_storage_window
+        )
         self.storage_test_button.grid(column=2, row=5, padx=10, pady=10)
-        self.sound_test_button = ttk.Button(controls_frame, text="Sound Test", command=self.open_sound_test_window)
+        self.sound_test_button = ttk.Button(
+            controls_frame, text="Sound Test", command=self.open_sound_test_window
+        )
         self.sound_test_button.grid(column=3, row=5, padx=10, pady=10)
-        self.network_test_button = ttk.Button(controls_frame, text="Network Test", command=self.open_network_test_window)
+        self.network_test_button = ttk.Button(
+            controls_frame, text="Network Test", command=self.open_network_test_window
+        )
         self.network_test_button.grid(column=4, row=5, padx=10, pady=10)
         self.exit_button = ttk.Button(controls_frame, text="Exit", command=self.exit_app)
         self.exit_button.grid(column=5, row=5, padx=10, pady=10)
 
         # Burn‑in Test Controls
-        ttk.Separator(controls_frame, orient="horizontal").grid(column=0, row=6, columnspan=6, sticky="ew", pady=10)
-        ttk.Label(controls_frame, text="Burn‑in Test Duration (sec):").grid(column=0, row=7, padx=10, pady=5)
+        ttk.Separator(controls_frame, orient="horizontal").grid(
+            column=0, row=6, columnspan=6, sticky="ew", pady=10
+        )
+        ttk.Label(controls_frame, text="Burn‑in Test Duration (sec):")\
+            .grid(column=0, row=7, padx=10, pady=5)
         self.burnin_entry = ttk.Entry(controls_frame, textvariable=self.burnin_duration, width=10)
         self.burnin_entry.grid(column=1, row=7, padx=10, pady=5)
         ttk.Label(controls_frame, text="Stress Level:").grid(column=2, row=7, padx=10, pady=5)
-        self.stress_combo = ttk.Combobox(controls_frame, textvariable=self.stress_level,
-                                         values=["Low", "Mid", "High"], state="readonly", width=10)
+        self.stress_combo = ttk.Combobox(
+            controls_frame, textvariable=self.stress_level,
+            values=["Low", "Mid", "High"], state="readonly", width=10
+        )
         self.stress_combo.grid(column=3, row=7, padx=10, pady=5)
-        self.burnin_button = ttk.Button(controls_frame, text="Run Burn‑in Test", command=self.run_burn_in_test)
+        self.burnin_button = ttk.Button(
+            controls_frame, text="Run Burn‑in Test", command=self.run_burn_in_test
+        )
         self.burnin_button.grid(column=4, row=7, padx=10, pady=5)
 
         # Main Information Display Area
@@ -251,16 +272,24 @@ class LoadTestApp:
         try:
             from sound_test.noisetester import play_and_record_main
         except ImportError:
-            self.root.after(0, lambda: messagebox.showerror("Sound Test",
-                "Sound test module not found. Please check that 'sound_test/__init__.py' and 'noisetester.py' exist."))
+            self.root.after(0, lambda: messagebox.showerror(
+                "Sound Test",
+                "Sound test module not found. Please check 'sound_test/noisetester.py'."
+            ))
             return
         try:
             result_corr = play_and_record_main()
             self.update_status(f"Sound test completed. Mean correlation: {result_corr:.4f}\n")
             if result_corr < self.sound_threshold:
-                self.root.after(0, lambda: messagebox.showerror("Sound Test", f"Sound test failed (corr={result_corr:.4f})"))
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Sound Test",
+                    f"Sound test failed (corr={result_corr:.4f})"
+                ))
             else:
-                self.root.after(0, lambda: messagebox.showinfo("Sound Test", f"Sound test succeeded (corr={result_corr:.4f})"))
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Sound Test",
+                    f"Sound test succeeded (corr={result_corr:.4f})"
+                ))
         except Exception as e:
             self.update_status(f"[ERROR] Sound Test Exception: {e}\n")
             self.root.after(0, lambda: messagebox.showerror("Sound Test", f"Exception: {e}"))
@@ -277,18 +306,13 @@ class LoadTestApp:
         StorageTestApp(storage_window)
 
     def open_network_test_window(self):
-        try:
-            from network_test.nettest import NetworkTestApp
-        except ImportError as e:
-            messagebox.showerror("Network Test", f"Network test module not found: {e}")
-            return
         if NetworkTestApp is None:
-            messagebox.showerror("Network Test", "NetworkTestApp is not available.")
+            messagebox.showerror("Network Test", "NetworkTestApp module not found.")
             return
         net_window = tk.Toplevel(self.root)
         net_window.title("Network Test")
         net_window.geometry("400x350")
-        app = NetworkTestApp(net_window)
+        NetworkTestApp(net_window)
 
     def run_burn_in_test(self):
         try:
@@ -313,57 +337,83 @@ class LoadTestApp:
         self.gpu_vram_load.set(vram_val)
         self.update_status(f"\nStarting Burn‑in Test for {duration} sec at {stress} level...\n")
 
-        # burn‑in モードでは、stop_event を threading.Event() を使用
         self.stop_event = threading.Event()
         self.burnin_stop_event.clear()
-        global start_event
         start_event.clear()
 
+        # CPU
         if self.cpu_load.get() > 0:
             if self.cpu_load_type.get() == "x86":
-                p = multiprocessing.Process(target=run_cpu_load_wrapper, args=(apply_cpu_load_x86, self.cpu_load.get(), self.stop_event))
+                p = multiprocessing.Process(
+                    target=run_cpu_load_wrapper,
+                    args=(apply_cpu_load_x86, self.cpu_load.get(), self.stop_event)
+                )
                 self.cpu_processes.append(p)
                 p.start()
             else:
-                t = threading.Thread(target=run_cpu_load_wrapper, args=(apply_cpu_load, self.cpu_load.get(), self.stop_event), daemon=True)
+                t = threading.Thread(
+                    target=run_cpu_load_wrapper,
+                    args=(apply_cpu_load, self.cpu_load.get(), self.stop_event),
+                    daemon=True
+                )
                 self.cpu_threads.append(t)
                 t.start()
+
+        # GPU
         if self.gpu_load.get() > 0:
             gpu_ids = list(range(torch.cuda.device_count()))
             if self.gpu_load_type.get() == "3D Render":
-                t = threading.Thread(target=run_gpu_load_wrapper, args=(apply_combined_load, self.gpu_load.get(), gpu_ids, self.stop_event), daemon=True)
+                func = apply_combined_load
             else:
-                t = threading.Thread(target=run_gpu_load_wrapper, args=(apply_gpu_tensor_load, self.gpu_load.get(), gpu_ids, self.stop_event), daemon=True)
-            self.gpu_threads.append(t)
-            t.start()
-        if self.gpu_vram_load.get() > 0:
-            gpu_ids = list(range(torch.cuda.device_count()))
-            t = threading.Thread(target=run_gpu_load_wrapper, args=(apply_gpu_vram_load, self.gpu_vram_load.get(), gpu_ids, self.stop_event), daemon=True)
+                func = apply_gpu_tensor_load
+            t = threading.Thread(
+                target=run_gpu_load_wrapper,
+                args=(func, self.gpu_load.get(), gpu_ids, self.stop_event),
+                daemon=True
+            )
             self.gpu_threads.append(t)
             t.start()
 
+        # VRAM
+        if self.gpu_vram_load.get() > 0:
+            gpu_ids = list(range(torch.cuda.device_count()))
+            t = threading.Thread(
+                target=run_gpu_load_wrapper,
+                args=(apply_gpu_vram_load, self.gpu_vram_load.get(), gpu_ids, self.stop_event),
+                daemon=True
+            )
+            self.gpu_threads.append(t)
+            t.start()
+
+        # Storage
         if StorageTest is not None:
             self.storage_test_instance = StorageTest(gui_callback=self.update_status)
             self.storage_test_instance.detect_usb_devices()
-            self.storage_test_thread = threading.Thread(target=run_storage_test_wrapper,
-                                                        args=(self.storage_test_instance, self._update_storage_progress, duration, self.stop_event),
-                                                        daemon=True)
+            self.storage_test_thread = threading.Thread(
+                target=run_storage_test_wrapper,
+                args=(self.storage_test_instance, self._update_storage_progress, duration, self.stop_event),
+                daemon=True
+            )
             self.storage_test_thread.start()
         else:
             self.update_status("[WARN] StorageTest module not found. Skipping storage test.")
 
-        # Network Test: burn‑in モードでは固定のターゲットIPを使用
+        # Network (Burn‑in)
         self.net_popup, self.net_progress = create_net_popup(self.root)
-        self.network_test_thread = threading.Thread(target=run_network_test_wrapper,
-                                                      args=(self.stop_event, self.net_progress, 5),
-                                                      daemon=True)
+        self.network_test_thread = threading.Thread(
+            target=run_network_test_wrapper,
+            args=(self.stop_event, self.net_progress),
+            daemon=True
+        )
         self.network_test_thread.start()
 
-        # Sound Test: burn‑in モード用サブウィンドウを作成
+        # Sound (Burn‑in)
         self.burnin_popup, self.burnin_progress = create_burnin_popup(self.root)
-        self.sound_test_thread = threading.Thread(target=run_sound_test_wrapper,
-                                                    args=(self.stop_event, self.burnin_progress, self.sound_threshold, 3, duration),
-                                                    daemon=True)
+        self.sound_test_thread = threading.Thread(
+            target=run_sound_test_wrapper,
+            args=(self.stop_event, self.burnin_progress, self.sound_threshold, 3, duration),
+            daemon=True
+        )
         self.sound_test_thread.start()
 
         start_event.set()
@@ -405,24 +455,42 @@ class LoadTestApp:
 
         if cpu_load_percentage > 0:
             if cpu_load_type == "x86":
-                p = multiprocessing.Process(target=apply_cpu_load_x86, args=(cpu_load_percentage, self.stop_event))
+                p = multiprocessing.Process(
+                    target=apply_cpu_load_x86,
+                    args=(cpu_load_percentage, self.stop_event)
+                )
                 self.cpu_processes.append(p)
                 p.start()
             else:
-                t = threading.Thread(target=apply_cpu_load, args=(cpu_load_percentage, self.stop_event), daemon=True)
+                t = threading.Thread(
+                    target=apply_cpu_load,
+                    args=(cpu_load_percentage, self.stop_event),
+                    daemon=True
+                )
                 self.cpu_threads.append(t)
                 t.start()
+
         if gpu_load_percentage > 0:
             gpu_ids = list(range(torch.cuda.device_count()))
             if gpu_load_type == "3D Render":
-                t = threading.Thread(target=apply_combined_load, args=(gpu_load_percentage, self.stop_event, gpu_ids), daemon=True)
+                func = apply_combined_load
             else:
-                t = threading.Thread(target=apply_gpu_tensor_load, args=(gpu_load_percentage, self.stop_event, gpu_ids), daemon=True)
+                func = apply_gpu_tensor_load
+            t = threading.Thread(
+                target=func,
+                args=(gpu_load_percentage, self.stop_event, gpu_ids),
+                daemon=True
+            )
             self.gpu_threads.append(t)
             t.start()
+
         if gpu_vram_percentage > 0:
             gpu_ids = list(range(torch.cuda.device_count()))
-            t = threading.Thread(target=apply_gpu_vram_load, args=(gpu_vram_percentage, self.stop_event, gpu_ids), daemon=True)
+            t = threading.Thread(
+                target=apply_gpu_vram_load,
+                args=(gpu_vram_percentage, self.stop_event, gpu_ids),
+                daemon=True
+            )
             self.gpu_threads.append(t)
             t.start()
 
@@ -437,7 +505,9 @@ class LoadTestApp:
         cpu_usage = psutil.cpu_percent(interval=1)
         memory_usage = psutil.virtual_memory().percent
         if torch.cuda.device_count() > 0:
-            vram_usage = (torch.cuda.memory_allocated() / torch.cuda.get_device_properties(0).total_memory) * 100
+            vram_usage = (
+                torch.cuda.memory_allocated() / torch.cuda.get_device_properties(0).total_memory
+            ) * 100
         else:
             vram_usage = 0
         self.psu_power_label.config(text=psu_power)
@@ -480,9 +550,7 @@ class LoadTestApp:
         self.stop_all_tests()
         self.root.quit()
         self.root.destroy()
-    # task shutdown
         os._exit(0)
-
 
 
 if __name__ == "__main__":

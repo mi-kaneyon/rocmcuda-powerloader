@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
 import os
-import sys
 import subprocess
 import json
 import tkinter as tk
@@ -8,199 +6,177 @@ from tkinter import ttk, messagebox
 import threading
 import time
 
-CONFIG_FILENAME = "nettest_config.json"
+MODULE_DIR      = os.path.dirname(__file__)
+CONFIG_FILENAME = os.path.join(MODULE_DIR, "nettest_config.json")
+
+
+def detect_default_gateway():
+    """`ip route` からデフォルトゲートウェイをパースして返す。失敗時は None."""
+    try:
+        out = subprocess.check_output(["ip", "route"], universal_newlines=True)
+        for line in out.splitlines():
+            if line.startswith("default via"):
+                return line.split()[2]
+    except Exception:
+        pass
+    return None
+
+
+def ensure_config():
+    """設定ファイルが存在しない場合、デフォルト値で作成する。"""
+    if not os.path.exists(CONFIG_FILENAME):
+        default_cfg = {
+            "network_type": "Wired",
+            "target_ip":    detect_default_gateway() or "8.8.8.8",
+            "ping_count":   4,
+            "timeout":      2,
+            "interval":     5
+        }
+        save_config(default_cfg)
+    return load_config()
+
 
 def load_config():
-    """Load network test settings from CONFIG_FILENAME.
-    If file does not exist, return default settings."""
-    default_config = {
-        "network_type": "Wired",  # "Wired" or "Wireless"
-        "target_ip": "8.8.8.8",
-        "ssid": "",
-        "encryption": "WPA2",
-        "password": "",
-        "ping_count": 4,
-        "timeout": 2,
-        "interval": 5
-    }
-    if os.path.exists(CONFIG_FILENAME):
-        try:
-            with open(CONFIG_FILENAME, "r") as f:
-                config = json.load(f)
-            return config
-        except Exception as e:
-            print(f"[ERROR] Failed to load config: {e}")
-            return default_config
-    else:
-        return default_config
-
-def save_config(config):
-    """Save network test settings to CONFIG_FILENAME."""
     try:
-        with open(CONFIG_FILENAME, "w") as f:
-            json.dump(config, f, indent=4)
-    except Exception as e:
-        print(f"[ERROR] Failed to save config: {e}")
+        with open(CONFIG_FILENAME, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(cfg):
+    with open(CONFIG_FILENAME, "w") as f:
+        json.dump(cfg, f, indent=4)
+
 
 def run_ping_test(target_ip, count=4, timeout=2):
-    """
-    Run a ping test to target_ip and return a dictionary with results.
-    (Linux用の例。必要に応じてオプションを調整してください。)
-    """
+    """ping を実行して辞書で結果を返す。"""
     try:
         cmd = ["ping", "-c", str(count), "-W", str(timeout), target_ip]
-        output = subprocess.check_output(cmd, stderr=subprocess.STDOUT, universal_newlines=True)
-        result = {}
-        for line in output.splitlines():
-            if "packets transmitted" in line:
-                parts = line.split(",")
-                result["transmitted"] = int(parts[0].split()[0])
-                result["received"] = int(parts[1].split()[0])
-                result["packet_loss"] = float(parts[2].strip().split("%")[0])
-            if "rtt min/avg/max/mdev" in line:
-                rtt_values = line.split("=")[1].split()[0].split("/")
-                result["min_rtt"] = float(rtt_values[0])
-                result["avg_rtt"] = float(rtt_values[1])
-                result["max_rtt"] = float(rtt_values[2])
-        return result
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, universal_newlines=True)
+        res = {}
+        for L in out.splitlines():
+            if "packets transmitted" in L:
+                p = L.split(",")
+                res["tx"]   = int(p[0].split()[0])
+                res["rx"]   = int(p[1].split()[0])
+                res["loss"] = float(p[2].split("%")[0])
+            if "rtt min/avg/max/mdev" in L:
+                a = L.split("=")[1].split()[0].split("/")
+                res["min"], res["avg"], res["max"] = map(float, a[:3])
+        return res
     except subprocess.CalledProcessError as e:
         return {"error": str(e), "output": e.output}
 
-def run_network_test_loop(stop_event, target_ip, test_interval, callback):
+
+def run_network_test_loop(stop_event, callback):
     """
-    連続して ping テストを実行するループ。
-    stop_event がセットされるまで、指定の間隔で ping を実行し、結果を callback(result) で返す。
+    stop_event がセットされるまで以下を繰り返す：
+      1) 設定ファイルを読んで target_ip を取得
+      2) target_ip がデフォルト(8.8.8.8)ならゲートウェイを再検出
+      3) ping を実行して結果を callback に渡す
+      4) interval 秒だけ待つ
     """
     while not stop_event.is_set():
-        result = run_ping_test(target_ip, count=4, timeout=2)
-        callback(result)
-        for _ in range(test_interval):
+        cfg = ensure_config()
+        tgt = cfg.get("target_ip", "8.8.8.8")
+        if tgt == "8.8.8.8":
+            gw = detect_default_gateway()
+            if gw:
+                tgt = gw
+        res = run_ping_test(
+            tgt,
+            count=cfg.get("ping_count", 4),
+            timeout=cfg.get("timeout", 2)
+        )
+        callback(tgt, res)
+        for _ in range(cfg.get("interval", 5)):
             if stop_event.is_set():
                 break
             time.sleep(1)
 
+
 class NetworkTestApp:
     def __init__(self, root):
         self.root = root
-        self.config = load_config()  # 設定ファイルの読み込み
-
-        self.root.title("Network Test Settings")
-        self.root.geometry("400x450")
-
-        # ネットワーク種別
-        self.network_type = tk.StringVar(value=self.config.get("network_type", "Wired"))
-        self.target_ip = tk.StringVar(value=self.config.get("target_ip", "8.8.8.8"))
-        self.ssid = tk.StringVar(value=self.config.get("ssid", ""))
-        self.encryption = tk.StringVar(value=self.config.get("encryption", "WPA2"))
-        self.password = tk.StringVar(value=self.config.get("password", ""))
-        self.ping_count = tk.IntVar(value=self.config.get("ping_count", 4))
-        self.timeout = tk.IntVar(value=self.config.get("timeout", 2))
-        self.interval = tk.IntVar(value=self.config.get("interval", 5))
-
-        # ネットワークテストの連続実行用の停止イベントとスレッド
         self.stop_event = threading.Event()
-        self.test_thread = None
+        self.cfg = ensure_config()
 
-        # UI の作成
+        root.title("Network Test Settings")
+        root.geometry("400x500")
+
+        # メインフレーム
         frame = ttk.Frame(root)
         frame.pack(padx=10, pady=10, fill="x")
 
-        ttk.Label(frame, text="Select Network Type:").pack(anchor="w")
-        ttk.Radiobutton(frame, text="Wired", variable=self.network_type, value="Wired", command=self.update_fields).pack(anchor="w")
-        ttk.Radiobutton(frame, text="Wireless", variable=self.network_type, value="Wireless", command=self.update_fields).pack(anchor="w")
+        # 設定画面ラベル
+        ttk.Label(frame, text="Network Test Configuration", font=(None, 14)).pack(pady=5)
 
-        # Wired: ターゲットIP
+        # network_type
+        ttk.Label(frame, text="Network Type:").pack(anchor="w")
+        self.network_type = tk.StringVar(value=self.cfg.get("network_type", "Wired"))
+        ttk.Combobox(frame, textvariable=self.network_type,
+                     values=["Wired", "Wireless"]).pack(fill="x")
+
+        # target_ip
         ttk.Label(frame, text="Target IP:").pack(anchor="w", pady=(10,0))
-        self.ip_entry = ttk.Entry(frame, textvariable=self.target_ip)
-        self.ip_entry.pack(anchor="w", fill="x")
+        self.target_ip = tk.StringVar(value=self.cfg.get("target_ip", ""))
+        ttk.Entry(frame, textvariable=self.target_ip).pack(fill="x")
 
-        # Wireless用設定（初期は非表示）
-        self.wireless_frame = ttk.Frame(frame)
-        self.ssid_label = ttk.Label(self.wireless_frame, text="SSID:")
-        self.ssid_entry = ttk.Entry(self.wireless_frame, textvariable=self.ssid)
-        self.enc_label = ttk.Label(self.wireless_frame, text="Encryption:")
-        self.enc_entry = ttk.Entry(self.wireless_frame, textvariable=self.encryption)
-        self.pwd_label = ttk.Label(self.wireless_frame, text="Password:")
-        self.pwd_entry = ttk.Entry(self.wireless_frame, textvariable=self.password, show="*")
-        self.ssid_label.pack(anchor="w")
-        self.ssid_entry.pack(anchor="w", fill="x")
-        self.enc_label.pack(anchor="w")
-        self.enc_entry.pack(anchor="w", fill="x")
-        self.pwd_label.pack(anchor="w")
-        self.pwd_entry.pack(anchor="w", fill="x")
-        self.wireless_frame.pack_forget()
-
-        # Ping設定
+        # ping_count
         ttk.Label(frame, text="Ping Count:").pack(anchor="w", pady=(10,0))
-        self.ping_count_entry = ttk.Entry(frame, textvariable=self.ping_count)
-        self.ping_count_entry.pack(anchor="w", fill="x")
-        ttk.Label(frame, text="Timeout (sec):").pack(anchor="w", pady=(5,0))
-        self.timeout_entry = ttk.Entry(frame, textvariable=self.timeout)
-        self.timeout_entry.pack(anchor="w", fill="x")
-        ttk.Label(frame, text="Interval (sec):").pack(anchor="w", pady=(5,0))
-        self.interval_entry = ttk.Entry(frame, textvariable=self.interval)
-        self.interval_entry.pack(anchor="w", fill="x")
+        self.ping_count = tk.IntVar(value=self.cfg.get("ping_count", 4))
+        ttk.Spinbox(frame, from_=1, to=100, textvariable=self.ping_count).pack(fill="x")
 
-        # 設定保存ボタン
-        ttk.Button(frame, text="Save Settings", command=self.save_settings).pack(pady=(10,0))
-        # 連続テスト開始ボタン
-        ttk.Button(frame, text="Start Continuous Test", command=self.start_test).pack(pady=(10,0))
-        # 中断ボタン
-        ttk.Button(frame, text="Stop Test", command=self.stop_test).pack(pady=(5,10))
+        # timeout
+        ttk.Label(frame, text="Timeout (s):").pack(anchor="w", pady=(10,0))
+        self.timeout = tk.IntVar(value=self.cfg.get("timeout", 2))
+        ttk.Spinbox(frame, from_=1, to=60, textvariable=self.timeout).pack(fill="x")
 
-        # 結果表示エリア
-        self.result_area = tk.Text(root, height=8, width=50, font=("Helvetica", 10))
-        self.result_area.pack(padx=10, pady=10)
+        # interval
+        ttk.Label(frame, text="Interval (s):").pack(anchor="w", pady=(10,0))
+        self.interval = tk.IntVar(value=self.cfg.get("interval", 5))
+        ttk.Spinbox(frame, from_=1, to=3600, textvariable=self.interval).pack(fill="x")
 
-        self.update_fields()
+        # ボタン
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(pady=15, fill="x")
+        ttk.Button(btn_frame, text="Save Settings", command=self.save).pack(side="left", expand=True)
+        ttk.Button(btn_frame, text="Start Test",   command=self.start).pack(side="left", expand=True)
+        ttk.Button(btn_frame, text="Stop Test",    command=self.stop).pack(side="left", expand=True)
 
-    def update_fields(self):
-        if self.network_type.get() == "Wireless":
-            self.wireless_frame.pack(fill="x", pady=(10,0))
-        else:
-            self.wireless_frame.pack_forget()
+        # 結果エリア
+        self.result_area = tk.Text(root, height=10)
+        self.result_area.pack(padx=10, pady=(0,10), fill="both", expand=True)
 
-    def save_settings(self):
-        config = {
+    def save(self):
+        cfg = {
             "network_type": self.network_type.get(),
-            "target_ip": self.target_ip.get(),
-            "ssid": self.ssid.get(),
-            "encryption": self.encryption.get(),
-            "password": self.password.get(),
-            "ping_count": self.ping_count.get(),
-            "timeout": self.timeout.get(),
-            "interval": self.interval.get()
+            "target_ip":    self.target_ip.get(),
+            "ping_count":   self.ping_count.get(),
+            "timeout":      self.timeout.get(),
+            "interval":     self.interval.get()
         }
-        save_config(config)
-        messagebox.showinfo("Network Test", "Settings saved successfully.")
+        save_config(cfg)
+        messagebox.showinfo("Network Test", "Settings saved.")
 
-    def start_test(self):
-        target = self.target_ip.get()
-        if not target:
-            messagebox.showerror("Error", "Target IP is required.")
-            return
+    def start(self):
         self.result_area.delete("1.0", tk.END)
         self.stop_event.clear()
-        # スレッドで連続テストを開始
-        self.test_thread = threading.Thread(target=self.network_test_loop, args=(target,), daemon=True)
-        self.test_thread.start()
+        threading.Thread(
+            target=run_network_test_loop,
+            args=(self.stop_event, self._on_result),
+            daemon=True
+        ).start()
 
-    def network_test_loop(self, target):
-        count = self.ping_count.get()
-        timeout = self.timeout.get()
-        interval = self.interval.get()
-        while not self.stop_event.is_set():
-            result = run_ping_test(target, count=count, timeout=timeout)
-            self.result_area.insert(tk.END, f"Ping Test Result for {target}:\n{result}\n")
-            self.result_area.see(tk.END)
-            for _ in range(interval):
-                if self.stop_event.is_set():
-                    break
-                time.sleep(1)
+    def _on_result(self, target, result):
+        self.result_area.insert(tk.END, f"→ {target}: {result}\n")
+        self.result_area.see(tk.END)
 
-    def stop_test(self):
+    def stop(self):
         self.stop_event.set()
-        messagebox.showinfo("Network Test", "Network test stopped.")
+        messagebox.showinfo("Network Test", "Test stopped.")
+
 
 if __name__ == "__main__":
     root = tk.Tk()

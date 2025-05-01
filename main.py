@@ -423,15 +423,16 @@ class LoadTestApp:
         self.update_status(f"[Storage] Device {index+1} progress: {percent:.1f}%")
 
     def _burn_in_timer(self, duration):
+        # 指定時間待機
         time.sleep(duration)
+
+        # 完了処理：全テスト停止＋モード解除＋UI 更新
         self.stop_all_tests()
         self.burn_in_mode = False
-        self.update_status("\nBurn‑in Test completed.\n")
-        self.root.after(0, lambda: messagebox.showinfo("Burn‑in Test", "Burn‑in Test completed."))
-        if hasattr(self, 'burnin_popup') and self.burnin_popup.winfo_exists():
-            self.burnin_popup.destroy()
-        if hasattr(self, 'net_popup') and self.net_popup.winfo_exists():
-            self.net_popup.destroy()
+        self.update_status("\nBurn-in Test completed.\n")
+        self.root.after(0, lambda: messagebox.showinfo("Burn-in Test", "Burn-in Test completed."))
+
+        # システム情報リセット（主ウィンドウの状態初期化）
         self.root.after(100, self.reset_system_info)
 
     def reset_system_info(self):
@@ -520,10 +521,27 @@ class LoadTestApp:
         self.update_system_info()
 
     def stop_all_tests(self):
+        # 1) 実行中の各テストに停止シグナルを送る
         if self.stop_event:
             self.stop_event.set()
         self.burnin_stop_event.set()
         self.update_status("\nStop signal sent. Waiting for tests to terminate...\n")
+
+        # 2) Burn-in 進捗ウィンドウがあれば閉じる
+        if hasattr(self, 'burnin_popup') and self.burnin_popup and self.burnin_popup.winfo_exists():
+            try:
+                self.burnin_popup.destroy()
+            except Exception:
+                pass
+
+        # 3) ネットワークテストウィンドウがあれば閉じる
+        if hasattr(self, 'net_popup') and self.net_popup and self.net_popup.winfo_exists():
+            try:
+                self.net_popup.destroy()
+            except Exception:
+                pass
+
+        # 4) 背景スレッドの終了待ち
         threading.Thread(target=self._join_all_threads, daemon=True).start()
 
     def _join_all_threads(self):

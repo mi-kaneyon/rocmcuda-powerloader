@@ -2,6 +2,13 @@
 ## Based on the Ubuntu_loadpower 
 - Compliant with CUDA and ROCm
 
+## uploaded experimental version(New!)
+- After burn-in test mode, show result on the pop-up window.
+- It is under maintain
+- Normal function is not affected.
+- Please rename main.py and replace original file.
+
+
 > [!WARNING]
 > This is still proto type version. And continously revising the each function
 > You may not execute by your expected.

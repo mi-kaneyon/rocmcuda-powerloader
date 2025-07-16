@@ -7,6 +7,12 @@
 - It is under maintain
 - Normal function is not affected.
 - Please rename main.py and replace original file.
+## Updated (16th Jul 2025)
+- install shell script combine
+- change burn-in mode result display
+
+![Test Image 3](burn-inmode.png)
+
 
 
 > [!WARNING]

@@ -13,16 +13,16 @@ import torch
 
 
 # --- util モジュール ---
-from util.test_runner   import (
+from util.test_runner import (
     run_cpu_load,
     run_gpu_load,
     run_storage_test,
     run_network_test,
     run_sound_test
 )
-from util.test_manager  import stop_all_tests
+from util.test_manager   import stop_all_tests
 from util.result_manager import show_summary_window
-from util.ui_helpers    import create_burnin_popup, create_net_popup
+from util.ui_helpers     import create_burnin_popup, create_net_popup
 # --- 個別テストモジュール ---
 from storage_load.storage_test import StorageTestApp
 from network_test.nettest import NetworkTestApp
@@ -346,73 +346,97 @@ class LoadTestApp:
 
 
     def apply_load(self):
-        # ① 既存のテストを停止＆UIをロック
+        """
+        単独ロード実行時に CPU / GPU / VRAM / Storage / Network / Sound テストを
+        並行して起動します。
+        """
+        # 1) 既存テスト停止＆UIロック
         self.stop_all_tests(lambda: None)
         self.set_ui_state(True)
 
-        # ② start_event をクリアしておく
-        start_event.clear()
-
-        # ③ 各停止イベントを生成
-        self.cpu_stop_event     = multiprocessing.Event() if self.cpu_load_type.get()=="x86" else threading.Event()
+        # 2) 停止イベントを上書き生成
+        self.cpu_stop_event     = multiprocessing.Event() if self.cpu_load_type.get() == "x86" else threading.Event()
         self.gpu_stop_event     = threading.Event()
         self.storage_stop_event = threading.Event()
         self.network_stop_event = threading.Event()
         self.sound_stop_event   = threading.Event()
 
-        # ④ スライダ値を取得
+        # 3) パラメータ取得
         cpu_val  = self.cpu_load.get()
         gpu_val  = self.gpu_load.get()
         vram_val = self.gpu_vram_load.get()
+        duration = self.burnin_duration.get()
 
-        self.update_status(f"Starting tests → CPU={cpu_val}%, GPU={gpu_val}%, VRAM={vram_val}%")
+        # 4) ステータス出力
+        self.update_status(f"Starting tests → CPU={cpu_val}%, GPU={gpu_val}%, VRAM={vram_val}%, Duration={duration}s")
 
-        # ⑤ CPU,GPU,Storage,Network,Sound をスレッド立ち上げる（いずれも start_event.wait() で待機）
-        t_cpu = threading.Thread(
-            target=run_cpu_load_wrapper,
-            args=(apply_cpu_load, cpu_val, self.cpu_stop_event),
-            daemon=True
-        );   t_cpu.start()
+        # 5) CPU 負荷テスト
+        if cpu_val > 0 and apply_cpu_load:
+            t_cpu = threading.Thread(
+                target=run_cpu_load,
+                args=(self, cpu_val, self.cpu_stop_event),
+                daemon=True
+            )
+            self.cpu_threads.append(t_cpu)
+            t_cpu.start()
 
-        t_gpu = threading.Thread(
-            target=run_gpu_load_wrapper,
-            args=(apply_combined_load if self.gpu_load_type.get()=="3D Render" else apply_gpu_tensor_load,
-                  gpu_val, list(range(torch.cuda.device_count())), self.gpu_stop_event),
-            daemon=True
-        );   t_gpu.start()
+        # 6) GPU / VRAM 負荷テスト
+        if torch.cuda.is_available() and (gpu_val > 0 or vram_val > 0):
+            t_gpu = threading.Thread(
+                target=run_gpu_load,
+                args=(self, gpu_val, vram_val, self.gpu_stop_event),
+                daemon=True
+            )
+            self.gpu_threads.append(t_gpu)
+            t_gpu.start()
 
+        # 7) Storage テスト
         t_storage = threading.Thread(
-            target=run_storage_test_wrapper,
-            args=(self, self.storage_stop_event, self._update_storage_progress, self.storage_stop_event, self.burnin_duration.get()),
+            target=run_storage_test,
+            args=(self, self.storage_stop_event, duration),
             daemon=True
-        );   t_storage.start()
+        )
+        self.storage_test_thread = t_storage
+        t_storage.start()
 
-        net_popup, net_area = create_net_popup(self.root)
+        # 8) Network テスト
+        self.net_popup, net_area = create_net_popup(self.root)
         t_net = threading.Thread(
-            target=run_network_test_wrapper,
-            args=(self, self.network_stop_event, net_area, self.burnin_duration.get()),
+            target=run_network_test,
+            args=(self, self.network_stop_event, net_area, duration),
             daemon=True
-        );   t_net.start()
+        )
+        self.network_test_thread = t_net
+        t_net.start()
 
-        burn_popup, burn_area = create_burnin_popup(self.root)
+        # 9) Sound テスト
+        self.burnin_popup, burn_area = create_burnin_popup(self.root)
         t_sound = threading.Thread(
-            target=run_sound_test_wrapper,
-            args=(self, self.sound_stop_event, burn_area, self.sound_threshold, self.burnin_duration.get()),
+            target=run_sound_test,
+            args=(self, self.sound_stop_event, burn_area, self.sound_threshold, duration),
             daemon=True
-        );   t_sound.start()
+        )
+        self.sound_test_thread = t_sound
+        t_sound.start()
 
-        # ⑥ 最後に一度だけ start_event をセットして、すべてのテストを同時に開始
-        start_event.set()
+
+
 
     # ──────────────────────────────────────────────────────
 
-
     def run_burn_in_test(self):
         """
-        Burn‑in テストを CPU / GPU+VRAM / Storage / Network / Sound の５つを同時に走らせ、
-        duration 秒後に一括停止 → 完走したらサマリを表示します。
+        Burn‑in テストを CPU / GPU+VRAM / Storage / Network / Sound の５つを
+        同時に走らせ、duration 秒後に一括停止してサマリを表示します。
         """
-        # ––– ステップ①: ストレスレベルに合わせて各負荷を設定
+        # ① 既存のポップアップが残っていれば破棄
+        for attr in ("net_popup", "burnin_popup"):
+            popup = getattr(self, attr, None)
+            if popup and popup.winfo_exists():
+                popup.destroy()
+            setattr(self, attr, None)
+
+        # ② ストレスレベルに合わせて各負荷値を設定
         level = self.stress_level.get()
         cpu_pct, gpu_pct, vram_pct = {
             "Low":  (30, 30, 30),
@@ -424,20 +448,19 @@ class LoadTestApp:
         self.gpu_vram_load.set(vram_pct)
         self.update_status(f"Burn‑in → CPU={cpu_pct}%, GPU={gpu_pct}%, VRAM={vram_pct}%")
 
-        # ––– ステップ②: UIをロック & 新しい停止イベントを生成
+        # ③ UIをロック & 停止イベントを再生成
         self.set_ui_state(True)
+        duration = self.burnin_duration.get()
         self.cpu_stop_event     = threading.Event()
         self.gpu_stop_event     = threading.Event()
         self.storage_stop_event = threading.Event()
         self.network_stop_event = threading.Event()
         self.sound_stop_event   = threading.Event()
 
-        duration = self.burnin_duration.get()
-
-        # ––– ステップ③: 各テストを並行実行
+        # ④ 各テストを並行実行
         threading.Thread(
             target=run_cpu_load,
-              args=(self, cpu_pct, self.cpu_stop_event),
+            args=(self, cpu_pct, self.cpu_stop_event),
             daemon=True
         ).start()
 
@@ -468,34 +491,34 @@ class LoadTestApp:
             daemon=True
         ).start()
 
-        # ––– ステップ④: duration 秒後にすべて停止 → 完走時のみ _on_burnin_complete をコール
+        # ⑤ duration 秒後に全テストを停止 → 完走時に _on_burnin_complete を呼び出し
         self.root.after(
             duration * 1000,
             lambda: self.stop_all_tests(self._on_burnin_complete)
         )
 
 
+
+
+
     def _on_burnin_complete(self):
         """
-        duration 秒内に全テストが “完走” したときに呼ばれるコールバック。
-        1) 開いているサブウィンドウ（Network／Sound）を閉じる
-        2) util/result_manager の show_summary_window を呼び出し
-        3) UI を再度アンロックし、システム情報をリセット
+        duration 秒内に全テストが完走したときの処理。
         """
-        # 1) サブウィンドウをクローズ
-        for popup in (self.net_popup, self.burnin_popup):
-            try:
-                if popup and popup.winfo_exists():
-                    popup.destroy()
-            except Exception:
-                pass
+        # 1) すでに開いているサブウィンドウを閉じる
+        for attr in ("net_popup", "burnin_popup"):
+            popup = getattr(self, attr, None)
+            if popup and popup.winfo_exists():
+                popup.destroy()
+            setattr(self, attr, None)            # ← 変数をクリア
 
         # 2) 総合サマリを表示
         show_summary_window(self)
 
-        # 3) UIを戻してシステム情報をリセット
+        # 3) UI を戻してシステム情報をリセット
         self.set_ui_state(False)
         self.reset_system_info()
+
 
 
 

@@ -278,3 +278,4 @@ apply_combined_load_func = apply_combined_load
 apply_gpu_vram_load_func = apply_gpu_vram_load
 
 # ※ 上位スクリプト側は、これらの名前で関数を参照する前提です。
+

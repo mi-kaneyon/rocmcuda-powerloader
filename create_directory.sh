@@ -1,29 +1,68 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Create main directory
-mkdir -p lin_bench
+# プロジェクトルートを基準に
+ROOT="$(pwd)"
+TARGET="$ROOT/s_bench"
 
-# Create subdirectories
-mkdir -p s_bench/cpu_load
-mkdir -p s_bench/gpu_load
-mkdir -p s_bench/system_info
-mkdir -p s_bench/storage_load
-mkdir -p s_bench/sound_test
-mkdir -p s_bench/network_test
+# 1) s_bench ルートと、モジュール用サブディレクトリ群を作成
+declare -a MODULES=(
+  cpu_load
+  gpu_load
+  system_info
+  storage_load
+  sound_test
+  network_test
+  util
+)
 
-# Move files to respective directories
-mv main.py lin_bench/
-mv cpu_load.py lin_bench/cpu_load/
-mv gpu_load.py lin_bench/gpu_load/
-mv system_info.py lin_bench/system_info/
-mv storage_test.py lin_bench/storage_load/
-mv noisetester.py lin_bench/storage_load/
+echo "=== Creating s_bench and subdirectories ==="
+mkdir -p "$TARGET"
+for m in "${MODULES[@]}"; do
+  mkdir -p "$TARGET/$m"
+  echo "  - ensured: s_bench/$m"
+done
 
-# Output status
-echo "Directory structure has been created and files have been moved to their respective directories:"
-echo "1. main.py has been moved to lin_bench directory."
-echo "2. cpu_load.py has been moved to lin_bench/cpu_load directory."
-echo "3. gpu_load.py has been moved to lin_bench/gpu_load directory."
-echo "4. system_info.py has been moved to lin_bench/system_info directory."
-echo "5. storage_test.py has been moved to lin_bench/storage_load directory."
-echo "6. noisetest.py has been moved to lin_bench/sound_test directory."
+# 2) 各モジュールのコンテンツを移動
+echo
+echo "=== Moving files into s_bench/... ==="
+for m in "${MODULES[@]}"; do
+  SRC="$ROOT/$m"
+  DST="$TARGET/$m"
+  if [ -d "$SRC" ]; then
+    echo "  Moving contents of $m/ → s_bench/$m/"
+    mv "$SRC"/* "$DST"/
+    # 空になった元ディレクトリを削除（失敗しても無視）
+    rmdir "$SRC" 2>/dev/null || true
+  fi
+done
+
+# 3) ルート直下の main.py を s_bench/ へ移動
+if [ -f "$ROOT/main.py" ]; then
+  echo "  Moving main.py → s_bench/"
+  mv "$ROOT/main.py" "$TARGET/"
+fi
+
+# 4) ついでに、必要なら混在ファイルも追加で mv してください
+#    例: mv "$ROOT"/mixed_load/* "$TARGET/cpu_load"/
+#         mv "$ROOT"/gpu_load_cuda.py "$TARGET/gpu_load"/
+#         mv "$ROOT"/gpu_load_rocm.py "$TARGET/gpu_load"/
+#         mv "$ROOT"/texture.jpg "$TARGET/gpu_load"/
+#         mv "$ROOT"/nettest_config.json "$TARGET/network_test"/
+
+# 5) __init__.py を自動生成
+echo
+echo "=== Creating __init__.py in each package ==="
+for m in "${MODULES[@]}"; do
+  INIT="$TARGET/$m/__init__.py"
+  if [ ! -f "$INIT" ]; then
+    touch "$INIT"
+    echo "  Created $INIT"
+  else
+    echo "  Exists      $INIT"
+  fi
+done
+
+echo
+echo "=== Done! ==="
+echo "Your directory tree under s_bench/ is now ready for Python imports."
